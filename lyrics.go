@@ -9,9 +9,17 @@ import (
 	"net/http"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 const API_URL = "http://geci.me/api/lyric"
+const DEFAULT_SLEEP_TIME = 1 * time.Second
+
+const (
+	STOPPED = iota
+	PLAYING
+	ERROR
+)
 
 type Lrc struct {
 	Url    string `json:"lrc"`
@@ -28,44 +36,41 @@ type LyricResult struct {
 }
 
 type SongMeta struct {
-	Status string
-	Attrs  map[string]string
+	Status int
+	Title  string
+	Artist string
 }
 
-func GetCurrentSongMetaData() (out string) {
+func GetCurrentSongMetaData() SongMeta {
 	cmd := exec.Command("cmus-remote", "-Q")
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	err := cmd.Run()
 	if err != nil {
 		//not running
-		return ""
+		return SongMeta{Status: ERROR}
 	}
-	return stdout.String()
-}
-
-func ParseSongMetaData(out string) SongMeta {
-	kvs := strings.Split(out, "\n")
-	songMeta := SongMeta{Status: "stop"}
+	songMeta := SongMeta{Status: STOPPED}
+	kvs := strings.Split(stdout.String(), "\n")
 	//status stopped
 	if strings.Split(kvs[0], " ")[1] == "stopped" {
 		return songMeta
 	}
+	songMeta.Status = PLAYING
 	attr := make(map[string]string)
 	for _, kv := range kvs[1:] {
-		items := strings.Split(kv, " ")
-		fmt.Println(items)
-		switch len(items) {
-		case 2:
-			attr[items[0]] = items[1]
-		case 3:
-			attr[items[1]] = items[2]
-		default:
-			log.Println("invalid data while parsing cmus song metadata error,attr:", items)
+		if kv = strings.TrimSpace(kv); kv == "" {
+			continue
 		}
+		items := strings.Split(kv, " ")
+		if len(items) < 3 || items[0] != "tag" {
+			continue
+		}
+		attr[items[1]] = strings.Join(items[2:], " ")
 
 	}
-	songMeta.Attrs = attr
+	songMeta.Title = attr["title"]
+	songMeta.Artist = attr["artist"]
 	return songMeta
 }
 
@@ -98,9 +103,9 @@ func GetLyricResult(song, artist string) LyricResult {
 	if err != nil {
 		panic(err)
 	}
-	if lyricResult.Code != 0 {
-		panic("code error when get lyric:" + url)
-	}
+	// if lyricResult.Code != 0 {
+	// 	panic("code error when getting lyric:" + url)
+	// }
 	if lyricResult.Count <= 0 {
 		panic("not found.url:" + url)
 	}
@@ -125,8 +130,21 @@ func GetFirstLyric(song, artist string) string {
 }
 
 func main() {
-	// lyric := GetLyric("海阔天空", "信乐团")
-	// fmt.Println(lyric)
-	out := GetCurrentSongMetaData()
-	fmt.Println(ParseSongMetaData(out))
+	currentMeteData := SongMeta{}
+	for {
+		metaData := GetCurrentSongMetaData()
+		if metaData.Status == PLAYING {
+			if metaData.Artist != currentMeteData.Artist || metaData.Title != currentMeteData.Title {
+				currentMeteData.Artist = metaData.Artist
+				currentMeteData.Title = metaData.Title
+				fmt.Println("start fetch:", currentMeteData.Title)
+				lrc := GetFirstLyric(currentMeteData.Title, currentMeteData.Artist)
+				if lrc == "" {
+					lrc = GetFirstLyric(currentMeteData.Title, "")
+				}
+				fmt.Println(lrc)
+			}
+		}
+		time.Sleep(DEFAULT_SLEEP_TIME)
+	}
 }
